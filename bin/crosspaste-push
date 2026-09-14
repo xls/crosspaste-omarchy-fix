@@ -1,0 +1,44 @@
+#!/bin/bash
+# Push the current Wayland clipboard text into CrossPaste via its CLI.
+# Bound to Super+C in ~/.config/hypr/bindings.lua: CrossPaste is a Java/XWayland
+# app and never sees copies made by native Wayland apps (kitty, Brave, ...).
+#
+# Retries briefly so slow apps get time to place the copy on the clipboard, and
+# skips content that was already pushed so re-pressing Super+C stays idempotent.
+
+CLI=/opt/crosspaste/lib/app/bin/crosspaste-cli
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/crosspaste-push"
+LAST="$STATE_DIR/last-hash"
+mkdir -p "$STATE_DIR"
+
+tmp=$(mktemp) || exit 1
+trap 'rm -f "$tmp"' EXIT
+
+last=""
+[[ -f $LAST ]] && last=$(<"$LAST")
+
+# Right after login CrossPaste may still be starting (10 s autostart delay plus
+# JVM startup). Wait for it rather than dropping the copy; the clipboard is
+# read only after this, so whatever was copied last still gets pushed.
+for _ in $(seq 1 45); do
+  "$CLI" --no-start status >/dev/null 2>&1 && break
+  sleep 2
+done
+
+for _ in 1 2 3 4 5 6; do
+  types=$(wl-paste --list-types 2>/dev/null) || exit 0
+  # Respect password managers and only handle text.
+  grep -qx 'x-kde-passwordManagerHint' <<<"$types" && exit 0
+  if grep -qE '^(text/plain|UTF8_STRING|TEXT|STRING)' <<<"$types"; then
+    wl-paste --no-newline --type text >"$tmp" 2>/dev/null
+    if [[ -s $tmp ]]; then
+      hash=$(sha256sum "$tmp" | cut -c1-64)
+      if [[ $hash != "$last" ]]; then
+        "$CLI" --no-start copy <"$tmp" >/dev/null 2>&1 && printf '%s\n' "$hash" >"$LAST"
+        exit 0
+      fi
+    fi
+  fi
+  sleep 0.15
+done
+exit 0

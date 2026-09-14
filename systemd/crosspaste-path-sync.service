@@ -1,0 +1,12 @@
+[Unit]
+Description=Put CrossPaste image/file paths on the Wayland clipboard
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+ExecStart=%h/.local/bin/crosspaste-path-sync
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target

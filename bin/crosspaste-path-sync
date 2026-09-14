@@ -1,0 +1,44 @@
+#!/bin/bash
+# Whenever an image or file paste arrives in CrossPaste (synced from another
+# device, or captured locally), put the local file path(s) on the Wayland
+# clipboard as plain text. CrossPaste itself writes the image/file to the X11
+# clipboard, but Hyprland's XWayland bridge exposes it to Wayland apps as an
+# empty text entry, so pasting in a terminal would insert nothing.
+#
+# Runs as the crosspaste-path-sync systemd user service and reconnects if
+# CrossPaste is not running yet or restarts.
+
+CLI=/opt/crosspaste/lib/app/bin/crosspaste-cli
+
+shell_join() {
+  # Join paths with spaces; single-quote any that contain whitespace so the
+  # result pastes into a shell as-is. No trailing newline.
+  local out="" p
+  while IFS= read -r p; do
+    [[ -z $p ]] && continue
+    [[ $p =~ [[:space:]] ]] && p="'${p//\'/\'\\\'\'}'"
+    out+="${out:+ }$p"
+  done
+  printf '%s' "$out"
+}
+
+handle() {
+  local id=$1 json paths text
+  json=$("$CLI" --no-start --json paste "$id" 2>/dev/null) || return
+  paths=$(jq -r 'select(.typeName == "image" or .typeName == "file") | (.filePaths // [])[]' <<<"$json")
+  [[ -z $paths ]] && return
+  text=$(shell_join <<<"$paths")
+  [[ -z $text ]] && return
+  printf '%s' "$text" | wl-copy
+  echo "paste #$id -> clipboard: $text"
+}
+
+while true; do
+  if "$CLI" --no-start status >/dev/null 2>&1; then
+    "$CLI" --no-start watch --format id --type image --type file 2>/dev/null |
+      while IFS= read -r id; do
+        [[ $id =~ ^[0-9]+$ ]] && handle "$id"
+      done
+  fi
+  sleep 5
+done
