@@ -22,6 +22,7 @@ Run `install.sh` from a terminal; the AUR step needs your sudo password.
 | `~/.config/hypr/crosspaste.lua` | Rebinds Super+C to Omarchy's universal copy followed by `crosspaste-push`; required from `bindings.lua` |
 | `~/.local/bin/crosspaste-path-sync` + `crosspaste-path-sync.service` | Watches `crosspaste-cli watch`; when an image/file paste arrives it puts the local file path on the Wayland clipboard, so terminals paste the path |
 | `shell.json` tray pin | Keeps the CrossPaste tray icon visible on the Omarchy bar instead of inside the collapsed drawer |
+| ufw rules (only if ufw is active) | Allows CrossPaste's sync port (13129/tcp by default, read from `crosspaste-cli status`) and mDNS 5353/udp so other devices can discover and reach this machine |
 
 ## Why
 
@@ -39,6 +40,14 @@ paper over each direction.
 - The path-sync fires on *new* image/file pastes. Picking an old image from the
   CrossPaste window still pastes nothing in Wayland apps.
 - Your other CrossPaste devices may echo pushed items back as "remote" entries.
+
+## Firewall
+
+Omarchy ships ufw with `default deny incoming`. Other devices reach this
+machine on CrossPaste's sync port (13129/tcp) and discover it via mDNS
+(5353/udp), so both need an allow rule when ufw is active. The installer adds
+them if ufw is running and skips the step (with a note) if it is not; re-run
+`./install.sh` after enabling ufw. `uninstall` removes only the rules it added.
 
 ## Debugging
 

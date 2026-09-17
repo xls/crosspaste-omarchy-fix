@@ -14,6 +14,7 @@
 #   5. systemd --user crosspaste-path-sync.service, enabled and started
 #   6. pins the CrossPaste tray icon on the Omarchy bar (shell.json)
 #   7. starts CrossPaste if it is not running (it registers its own autostart)
+#   8. if ufw is active, allows CrossPaste's sync port (tcp) and mDNS 5353/udp
 #
 # Run it from a terminal: the package step asks for your sudo password.
 
@@ -121,6 +122,45 @@ start_crosspaste() {
   fi
 }
 
+ufw_active() { command -v ufw >/dev/null && systemctl is-active --quiet ufw; }
+
+crosspaste_port() {
+  local p
+  p=$("$CLI" --no-start status 2>/dev/null | awk '/^ *Port:/ {print $2}')
+  [[ $p =~ ^[0-9]+$ ]] && echo "$p" || echo 13129
+}
+
+configure_firewall() {
+  log "Firewall"
+  if ! command -v ufw >/dev/null; then ok "ufw not installed, nothing to do"; return; fi
+  if ! ufw_active; then
+    warn "ufw is inactive, so CrossPaste's ports are already reachable"
+    warn "if you enable ufw later, re-run ./install.sh to add the rules"
+    return
+  fi
+  local port rules; port=$(crosspaste_port)
+  rules=$(sudo ufw status 2>/dev/null || true)
+  if grep -qE "^$port/tcp +ALLOW" <<<"$rules"; then
+    ok "$port/tcp (CrossPaste sync) already allowed"
+  else
+    sudo ufw allow "$port/tcp" comment 'crosspaste-sync' >/dev/null && ok "allowed $port/tcp (CrossPaste sync)"
+  fi
+  if grep -qE "^5353/udp +ALLOW" <<<"$rules"; then
+    ok "5353/udp (mDNS discovery) already allowed"
+  else
+    sudo ufw allow 5353/udp comment 'crosspaste-mdns' >/dev/null && ok "allowed 5353/udp (mDNS discovery)"
+  fi
+}
+
+remove_firewall_rules() {
+  ufw_active || return 0
+  # Delete only rules carrying our comments, highest number first.
+  local nums
+  nums=$(sudo ufw status numbered 2>/dev/null | grep -E 'crosspaste-(sync|mdns)' | sed -E 's/^\[ *([0-9]+)\].*/\1/' | sort -rn)
+  local n; for n in $nums; do sudo ufw --force delete "$n" >/dev/null; done
+  [[ -n $nums ]] && ok "removed CrossPaste ufw rules"
+}
+
 do_install() {
   install_packages
   install_scripts
@@ -128,6 +168,7 @@ do_install() {
   install_service
   pin_tray_icon
   start_crosspaste
+  configure_firewall
   echo
   log "Done. Try: select text, press Super+C, then check '$CLI history'."
   echo "    ./install.sh status   |   ./install.sh logs"
@@ -147,6 +188,14 @@ do_status() {
   systemctl --user --no-pager status crosspaste-path-sync.service 2>&1 | sed -n '1,4p' | sed 's/^/   /'
   log "Tray pin"
   jq -r --arg id "$TRAY_ID" '[.bar.layout[]?[]? | select(.id=="omarchy.tray") | .pinned // []] | flatten | if index($id) then "   pinned" else "   not pinned" end' "$SHELL_JSON" 2>/dev/null || true
+  log "Firewall"
+  if ! command -v ufw >/dev/null; then echo "   ufw not installed"
+  elif ! ufw_active; then echo "   ufw inactive (ports reachable)"
+  else
+    local port; port=$(crosspaste_port)
+    sudo ufw status 2>/dev/null | grep -E "^($port/tcp|5353/udp) " | sed 's/^/   /' || true
+    sudo ufw status 2>/dev/null | grep -qE "^$port/tcp +ALLOW" && ok "$port/tcp allowed" || warn "$port/tcp not allowed: run ./install.sh"
+  fi
   log "Recent journal (crosspaste-path-sync)"
   journalctl --user -u crosspaste-path-sync -n 8 --no-pager -o cat 2>/dev/null | sed 's/^/   /'
   log "Recent CrossPaste warnings"
@@ -173,6 +222,7 @@ do_uninstall() {
         if .id == "omarchy.tray" and .pinned then .pinned -= [$id] else . end))' "$SHELL_JSON" >"$tmp" && mv "$tmp" "$SHELL_JSON"
   fi
   rm -rf "${XDG_STATE_HOME:-$HOME/.local/state}/crosspaste-push"
+  remove_firewall_rules
   command -v hyprctl >/dev/null && hyprctl reload >/dev/null 2>&1 || true
   ok "removed. To drop the app too: yay -Rns crosspaste-desktop-bin"
 }
