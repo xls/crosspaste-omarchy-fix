@@ -10,6 +10,8 @@
 #   1. crosspaste-desktop-bin (AUR) + libxcrypt-compat (needed by crosspaste-cli)
 #   2. ~/.local/bin/crosspaste-push       Super+C -> push clipboard text into CrossPaste
 #   3. ~/.local/bin/crosspaste-path-sync  synced image/file -> its local path on the clipboard
+#      ~/.local/bin/crosspaste-wl-copy    built from src/: its clipboard writer, marked so
+#                                         CrossPaste does not sync the write back
 #   4. ~/.config/hypr/crosspaste.lua      the Super+C binding, required from bindings.lua
 #   5. systemd --user crosspaste-path-sync.service, enabled and started
 #   6. pins the CrossPaste tray icon on the Omarchy bar (shell.json)
@@ -39,10 +41,12 @@ backup() { [[ -f $1 ]] && cp -p "$1" "$1.bak.$(date +%s)"; }
 install_packages() {
   log "Packages"
   command -v yay >/dev/null || die "yay not found; install it first"
-  if pacman -Q crosspaste-desktop-bin libxcrypt-compat >/dev/null 2>&1; then
-    ok "crosspaste-desktop-bin and libxcrypt-compat already installed"
+  # wayland, wayland-protocols, gcc, pkgconf: to build crosspaste-wl-copy.
+  local pkgs=(crosspaste-desktop-bin libxcrypt-compat wayland wayland-protocols gcc pkgconf)
+  if pacman -Q "${pkgs[@]}" >/dev/null 2>&1; then
+    ok "${pkgs[*]} already installed"
   else
-    yay -S --needed crosspaste-desktop-bin libxcrypt-compat
+    yay -S --needed "${pkgs[@]}"
   fi
   [[ -x $CLI ]] || die "crosspaste-cli missing at $CLI"
   "$CLI" version >/dev/null 2>&1 || die "crosspaste-cli does not run (missing libcrypt.so.1?)"
@@ -55,6 +59,25 @@ install_scripts() {
   install -m 755 "$HERE/bin/crosspaste-push" "$BIN_DIR/crosspaste-push"
   install -m 755 "$HERE/bin/crosspaste-path-sync" "$BIN_DIR/crosspaste-path-sync"
   ok "crosspaste-push, crosspaste-path-sync"
+  build_wl_copy
+}
+
+build_wl_copy() {
+  # crosspaste-path-sync writes the clipboard through this instead of wl-copy:
+  # it also offers CrossPaste's origin MIME type, so CrossPaste does not record
+  # the write as a new local paste and sync it back to the sending device.
+  local xml tmp
+  xml="$(pkg-config --variable=pkgdatadir wayland-protocols)/staging/ext-data-control/ext-data-control-v1.xml"
+  [[ -f $xml ]] || die "ext-data-control-v1.xml not found (wayland-protocols too old?)"
+  tmp=$(mktemp -d)
+  wayland-scanner client-header "$xml" "$tmp/ext-data-control-v1-client-protocol.h"
+  wayland-scanner private-code "$xml" "$tmp/ext-data-control-v1-protocol.c"
+  gcc -O2 -Wall -Wextra -I"$tmp" -o "$tmp/crosspaste-wl-copy" \
+    "$HERE/src/crosspaste-wl-copy.c" "$tmp/ext-data-control-v1-protocol.c" \
+    $(pkg-config --cflags --libs wayland-client) || { rm -rf "$tmp"; die "building crosspaste-wl-copy failed"; }
+  install -m 755 "$tmp/crosspaste-wl-copy" "$BIN_DIR/crosspaste-wl-copy"
+  rm -rf "$tmp"
+  ok "crosspaste-wl-copy (built from src/)"
 }
 
 install_binding() {
@@ -184,6 +207,7 @@ do_status() {
   fi
   grep -qF "$REQUIRE_LINE" "$HYPR_DIR/bindings.lua" 2>/dev/null && ok "bindings.lua requires hypr.crosspaste" || warn "require line missing in bindings.lua"
   [[ -x $BIN_DIR/crosspaste-push ]] && ok "crosspaste-push installed" || warn "crosspaste-push missing"
+  [[ -x $BIN_DIR/crosspaste-wl-copy ]] && ok "crosspaste-wl-copy installed" || warn "crosspaste-wl-copy missing: run ./install.sh"
   log "Path-sync service"
   systemctl --user --no-pager status crosspaste-path-sync.service 2>&1 | sed -n '1,4p' | sed 's/^/   /'
   log "Tray pin"
@@ -210,7 +234,7 @@ do_uninstall() {
   log "Removing integration (CrossPaste package left in place)"
   systemctl --user disable --now crosspaste-path-sync.service 2>/dev/null || true
   rm -f "$UNIT_DIR/crosspaste-path-sync.service"; systemctl --user daemon-reload
-  rm -f "$BIN_DIR/crosspaste-push" "$BIN_DIR/crosspaste-path-sync" "$HYPR_DIR/crosspaste.lua"
+  rm -f "$BIN_DIR/crosspaste-push" "$BIN_DIR/crosspaste-path-sync" "$BIN_DIR/crosspaste-wl-copy" "$HYPR_DIR/crosspaste.lua"
   if grep -qF "$REQUIRE_LINE" "$HYPR_DIR/bindings.lua" 2>/dev/null; then
     backup "$HYPR_DIR/bindings.lua"
     sed -i "/^-- CrossPaste: Super+C also pushes/d; /^require(\"hypr.crosspaste\")$/d" "$HYPR_DIR/bindings.lua"

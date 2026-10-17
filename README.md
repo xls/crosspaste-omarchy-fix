@@ -18,9 +18,11 @@ Run `install.sh` from a terminal; the AUR step needs your sudo password.
 | Piece | Purpose |
 |---|---|
 | `crosspaste-desktop-bin` (AUR) + `libxcrypt-compat` | The app, and the lib its bundled `crosspaste-cli` needs |
+| `wayland`, `wayland-protocols`, `gcc`, `pkgconf` | To build `crosspaste-wl-copy` from `src/` |
 | `~/.local/bin/crosspaste-push` | Run by Super+C: pipes the Wayland clipboard text into `crosspaste-cli copy` |
 | `~/.config/hypr/crosspaste.lua` | Rebinds Super+C to Omarchy's universal copy followed by `crosspaste-push`; required from `bindings.lua` |
-| `~/.local/bin/crosspaste-path-sync` + `crosspaste-path-sync.service` | Watches `crosspaste-cli watch`; when an image/file paste arrives it puts the local file path on the Wayland clipboard, so terminals paste the path |
+| `~/.local/bin/crosspaste-path-sync` + `crosspaste-path-sync.service` | Watches `crosspaste-cli watch`; when an image/file paste arrives it puts the local file path on the Wayland clipboard, so terminals paste the path; when text/html arrives from another device it puts the plain text there directly, so received pastes do not depend on the XWayland bridge |
+| `~/.local/bin/crosspaste-wl-copy` (built from `src/crosspaste-wl-copy.c`) | The path-sync's clipboard writer: like `wl-copy`, but the selection also offers `application/x-crosspaste-origin`, the type CrossPaste tags its own writes with, so CrossPaste does not capture the path/text as a new local paste and sync it back to the sending device |
 | `shell.json` tray pin | Keeps the CrossPaste tray icon visible on the Omarchy bar instead of inside the collapsed drawer |
 | ufw rules (only if ufw is active) | Allows CrossPaste's sync port (13129/tcp by default, read from `crosspaste-cli status`) and mDNS 5353/udp so other devices can discover and reach this machine |
 
@@ -29,8 +31,9 @@ Run `install.sh` from a terminal; the AUR step needs your sudo password.
 Hyprland only hands the clipboard selection to the focused client. XWayland
 therefore learns about a copy only when an X11 window is focused, so CrossPaste
 misses everything copied in kitty, Brave and other native Wayland apps. The
-reverse direction works, but Hyprland's XWayland bridge exposes CrossPaste's
-image/file clipboard as an empty text entry to Wayland apps. The two scripts
+reverse direction mostly works, but Hyprland's XWayland bridge exposes
+CrossPaste's image/file clipboard as an empty text entry to Wayland apps, and
+occasionally drops received text (e.g. right after CrossPaste restarts). The two scripts
 paper over each direction.
 
 ## Known limits

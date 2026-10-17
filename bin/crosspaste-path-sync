@@ -1,14 +1,22 @@
 #!/bin/bash
-# Whenever an image or file paste arrives in CrossPaste (synced from another
-# device, or captured locally), put the local file path(s) on the Wayland
-# clipboard as plain text. CrossPaste itself writes the image/file to the X11
-# clipboard, but Hyprland's XWayland bridge exposes it to Wayland apps as an
-# empty text entry, so pasting in a terminal would insert nothing.
+# Put pastes arriving in CrossPaste onto the Wayland clipboard directly, instead
+# of relying on Hyprland's XWayland bridge (CrossPaste only writes the X11
+# clipboard):
+#   - image/file pastes (synced or local): the local file path(s) as plain
+#     text, because the bridge exposes them to Wayland apps as an empty text
+#     entry, so pasting in a terminal would insert nothing.
+#   - text/link/html/rtf/color pastes synced from another device: their plain
+#     text, because the bridge sometimes drops or lags these.
+
+# Writes go through crosspaste-wl-copy rather than wl-copy: it marks the
+# selection with CrossPaste's origin MIME type, so CrossPaste does not capture
+# the text as a new local paste and sync it back to the device it came from.
 #
 # Runs as the crosspaste-path-sync systemd user service and reconnects if
 # CrossPaste is not running yet or restarts.
 
 CLI=/opt/crosspaste/lib/app/bin/crosspaste-cli
+COPY=${0%/*}/crosspaste-wl-copy
 
 shell_join() {
   # Join paths with spaces; single-quote any that contain whitespace so the
@@ -22,20 +30,48 @@ shell_join() {
   printf '%s' "$out"
 }
 
+trim() {
+  # Strip leading/trailing whitespace; HTML summaries carry markup indentation.
+  local s=$1
+  s="${s#"${s%%[![:space:]]*}"}"
+  s="${s%"${s##*[![:space:]]}"}"
+  printf '%s' "$s"
+}
+
 handle() {
-  local id=$1 json paths text
+  local id=$1 json type remote paths text
   json=$("$CLI" --no-start --json paste "$id" 2>/dev/null) || return
-  paths=$(jq -r 'select(.typeName == "image" or .typeName == "file") | (.filePaths // [])[]' <<<"$json")
-  [[ -z $paths ]] && return
-  text=$(shell_join <<<"$paths")
+  type=$(jq -r '.typeName' <<<"$json")
+  remote=$(jq -r '.remote' <<<"$json")
+
+  case $type in
+    image | file)
+      paths=$(jq -r '(.filePaths // [])[]' <<<"$json")
+      [[ -z $paths ]] && return
+      text=$(shell_join <<<"$paths")
+      ;;
+    text | link | color)
+      [[ $remote == true ]] || return
+      text=$("$CLI" --no-start paste --raw --no-newline "$id" 2>/dev/null) || return
+      ;;
+    html | rtf)
+      [[ $remote == true ]] || return
+      text=$(trim "$("$CLI" --no-start paste --summary --no-newline "$id" 2>/dev/null)") || return
+      ;;
+    *) return ;;
+  esac
   [[ -z $text ]] && return
-  printf '%s' "$text" | wl-copy
-  echo "paste #$id -> clipboard: $text"
+
+  # Leave the clipboard alone if the bridge already delivered the same text.
+  [[ $(trim "$(timeout 2 wl-paste -n -t text 2>/dev/null)") == "$(trim "$text")" ]] && return
+
+  printf '%s' "$text" | "$COPY"
+  echo "paste #$id ($type) -> clipboard: ${text:0:120}"
 }
 
 while true; do
   if "$CLI" --no-start status >/dev/null 2>&1; then
-    "$CLI" --no-start watch --format id --type image --type file 2>/dev/null |
+    "$CLI" --no-start watch --format id 2>/dev/null |
       while IFS= read -r id; do
         [[ $id =~ ^[0-9]+$ ]] && handle "$id"
       done
