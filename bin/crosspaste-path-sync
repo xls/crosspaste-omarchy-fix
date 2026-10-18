@@ -6,8 +6,10 @@
 #     text, because the bridge exposes them to Wayland apps as an empty text
 #     entry, so pasting in a terminal would insert nothing.
 #   - text/link/html/rtf/color pastes synced from another device: their plain
-#     text, because the bridge sometimes drops or lags these.
-
+#     text, because the bridge sometimes drops or lags these. For html/rtf
+#     that is the plain text the sender copied alongside the markup (e.g. the
+#     URL when a link is copied in a browser), falling back to the summary.
+#
 # Writes go through crosspaste-wl-copy rather than wl-copy: it marks the
 # selection with CrossPaste's origin MIME type, so CrossPaste does not capture
 # the text as a new local paste and sync it back to the device it came from.
@@ -17,6 +19,7 @@
 
 CLI=/opt/crosspaste/lib/app/bin/crosspaste-cli
 COPY=${0%/*}/crosspaste-wl-copy
+DB=$HOME/.local/share/.crosspaste/data/crosspaste.db
 
 shell_join() {
   # Join paths with spaces; single-quote any that contain whitespace so the
@@ -28,6 +31,14 @@ shell_join() {
     out+="${out:+ }$p"
   done
   printf '%s' "$out"
+}
+
+plain_text_item() {
+  # The text item stored next to a paste's primary (html/rtf) item. The CLI only
+  # prints the primary item, so read it from CrossPaste's database.
+  [[ -r $DB ]] || return
+  sqlite3 -readonly "$DB" "SELECT pasteCollection FROM PasteDataEntity WHERE id = $1" 2>/dev/null |
+    jq -r '[.[] | fromjson | select(.type == 0) | .text][0] // empty' 2>/dev/null
 }
 
 trim() {
@@ -56,14 +67,18 @@ handle() {
       ;;
     html | rtf)
       [[ $remote == true ]] || return
-      text=$(trim "$("$CLI" --no-start paste --summary --no-newline "$id" 2>/dev/null)") || return
+      text=$(plain_text_item "$id")
+      [[ -n $text ]] || text=$(trim "$("$CLI" --no-start paste --summary --no-newline "$id" 2>/dev/null)") || return
       ;;
     *) return ;;
   esac
   [[ -z $text ]] && return
 
   # Leave the clipboard alone if the bridge already delivered the same text.
-  [[ $(trim "$(timeout 2 wl-paste -n -t text 2>/dev/null)") == "$(trim "$text")" ]] && return
+  if [[ $(trim "$(timeout 2 wl-paste -n -t text 2>/dev/null)") == "$(trim "$text")" ]]; then
+    echo "paste #$id ($type) already on clipboard: ${text:0:120}"
+    return
+  fi
 
   printf '%s' "$text" | "$COPY"
   echo "paste #$id ($type) -> clipboard: ${text:0:120}"

@@ -42,7 +42,8 @@ install_packages() {
   log "Packages"
   command -v yay >/dev/null || die "yay not found; install it first"
   # wayland, wayland-protocols, gcc, pkgconf: to build crosspaste-wl-copy.
-  local pkgs=(crosspaste-desktop-bin libxcrypt-compat wayland wayland-protocols gcc pkgconf)
+  # sqlite, jq: crosspaste-path-sync reads html pastes' plain text from the DB.
+  local pkgs=(crosspaste-desktop-bin libxcrypt-compat wayland wayland-protocols gcc pkgconf sqlite jq)
   if pacman -Q "${pkgs[@]}" >/dev/null 2>&1; then
     ok "${pkgs[*]} already installed"
   else
